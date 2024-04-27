@@ -135,15 +135,29 @@ typedef struct SerialState SerialState;
 SerialState s;
 
 char input = 'x';
+bool input_vaild;
+
+void try_read() {
+    if (!input_vaild) {
+        if (read(STDIN_FILENO, &input, 1) == 1) {
+            input_vaild = true;
+        }
+    }
+}
 
 uint64_t serial_ioport_read(void* opaque, long addr, unsigned size) {
+    try_read();
     uint32_t ret = 0;
     switch (addr) {
     case 0:
         if (s.lcr & UART_LCR_DLAB) {
             ret = (s.divider) & 0Xff;
         } else {
+            if (!input_vaild) {
+                fprintf(stderr, "lxy: %s:%d %s serial read, while input is empty\n", __FILE__,__LINE__,__func__);
+            }
             ret = input;
+            input_vaild = false;
         }
         break;
     case 1:
@@ -154,8 +168,12 @@ uint64_t serial_ioport_read(void* opaque, long addr, unsigned size) {
         }
         break;
     case 2:
-        ret = UART_IIR_NO_INT;
         ret = 0;
+        if (input_vaild) {
+            s.iir = UART_IIR_RDI;
+        } else if ((s.iir & UART_IIR_ID) == UART_IIR_THRI) {
+            s.thr_ipending = 0;
+        }
         break;
     case 3:
         fprintf(stderr, "serial_ioport_read, addr:%lx, data:%x, size:%d\n", addr, ret, size);
@@ -166,7 +184,7 @@ uint64_t serial_ioport_read(void* opaque, long addr, unsigned size) {
     case 5:
         ret = s.lsr;
         // dr ready
-        if (read(STDIN_FILENO, &input, 1) == 1) {
+        if (input_vaild) {
             ret |= 1;
         }
         break;
@@ -185,6 +203,7 @@ uint64_t serial_ioport_read(void* opaque, long addr, unsigned size) {
     return ret;
 }
 void serial_ioport_write(void* opaque, long addr, uint64_t val, unsigned size) {
+    try_read();
     switch (addr) {
     case 0:
         if (s.lcr & UART_LCR_DLAB) {
@@ -193,6 +212,13 @@ void serial_ioport_write(void* opaque, long addr, uint64_t val, unsigned size) {
             fprintf(stderr, "%c", (char)val);
             fflush(stderr);
             s.lsr |= (UART_LSR_TEMT | UART_LSR_THRE);
+            if (input_vaild) {
+                s.iir |= UART_IIR_RDI;
+                s.thr_ipending = false;
+            } else {
+                s.iir |= UART_IIR_THRI;
+                s.thr_ipending = true;
+            }
         }
         break;
     case 1:
