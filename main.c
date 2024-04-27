@@ -725,11 +725,12 @@ int main(int argc, char **argv) {
     }
 
     // set no echo
-    // struct termios term;
-    // tcgetattr(STDIN_FILENO, &term);
+    struct termios term;
+    tcgetattr(STDIN_FILENO, &term);
 
-    // term.c_lflag &= ~ECHO;
-    // tcsetattr(STDIN_FILENO, 0, &term);
+    term.c_lflag &= ~ECHO;
+    term.c_lflag &= ~ICANON;
+    tcsetattr(STDIN_FILENO, 0, &term);
 
     fcntl(STDIN_FILENO, F_SETFL, fcntl(STDIN_FILENO, F_GETFL) | O_NONBLOCK);
 
