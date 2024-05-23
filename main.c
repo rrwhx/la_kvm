@@ -675,7 +675,7 @@ bool load_elf(const char* filename, uint64_t* entry_addr) {
                 if (read(fd, data, file_size) != file_size) {
                     goto fail;
                 }
-                memcpy(ram + (ph->p_paddr & 0xfffffff), data, file_size);
+                memcpy(ram + (ph->p_paddr & 0xffffffff), data, file_size);
                 fprintf(stderr, "%lx, file_size:%lx mem_size:%lx\n", ph->p_paddr, file_size, mem_size);
             }
         }
