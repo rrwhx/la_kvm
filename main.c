@@ -608,6 +608,31 @@ static void show_csr(int vcpu_fd) {
 #define SZ_16G				_AC(0x400000000, ULL)
 #define SZ_32G				_AC(0x800000000, ULL)
 
+
+static inline FILE* fopen_nofail(const char *__restrict __filename, const char *__restrict __modes) {
+    FILE* f = fopen(__filename, __modes);
+    if (!f) {
+        perror(__filename);
+        abort();
+    }
+    return f;
+}
+
+void* fread_all_nofail(const char *__restrict __filename, int64_t* size) {
+    FILE *f = fopen_nofail(__filename, "rb");
+    fseek(f, 0, SEEK_END);
+    int64_t fsize = ftell(f);
+    fseek(f, 0, SEEK_SET);  /* same as rewind(f); */
+
+    void *string = malloc(fsize + 1);
+    assert(fread(string, fsize, 1, f) == 1);
+    fclose(f);
+    *size = fsize;
+    return string;
+}
+
+#define BIOS_BASE 0x1c000000UL
+#define BIOS_SIZE SZ_32M
 void* ram;
 
 static char* alloc_ram(uint64_t ram_size) {
@@ -617,6 +642,8 @@ static char* alloc_ram(uint64_t ram_size) {
     lsassert(part1 != MAP_FAILED);
     void *part2 = mmap(start + SZ_2G + SZ_256M, ram_size - SZ_256M, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
     lsassert(part2 != MAP_FAILED);
+    void* part3 = mmap(start + BIOS_BASE, SZ_32M, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    lsassert(part3 != MAP_FAILED);
     return part1;
 }
 
@@ -699,16 +726,20 @@ void usage(void) {
 
 int main(int argc, char **argv) {
     char* kernel_filename = "vmlinux";
+    char* bios_filename = NULL;
     uint64_t ram_size = SZ_16G;
 
     int c;
-    while ((c = getopt(argc, argv, "+m:k:d:D:")) != -1) {
+    while ((c = getopt(argc, argv, "+m:k:d:D:b:")) != -1) {
         switch (c) {
         case 'm':
             ram_size = atol(optarg) << 30;
             break;
         case 'k':
             kernel_filename = optarg;
+            break;
+        case 'b':
+            bios_filename = optarg;
             break;
         // case 'd':
         //     handle_logmask(optarg);
@@ -744,6 +775,15 @@ int main(int argc, char **argv) {
 
     uint64_t entry_addr;
     load_elf(kernel_filename, &entry_addr);
+    if (bios_filename) {
+        uint64_t size;
+        void* bios = fread_all_nofail(bios_filename, &size);
+        if (size > BIOS_SIZE) {
+            fprintf(stderr, "bios too large %ld\n", size);
+            exit(EXIT_FAILURE);
+        }
+        memcpy(ram + BIOS_BASE, bios, size);
+    }
 
     int ret;
     int sys_fd = open("/dev/kvm", O_RDWR);
@@ -788,6 +828,16 @@ int main(int argc, char **argv) {
     ret = ioctl(vm_fd, KVM_SET_USER_MEMORY_REGION, &high_memory_region);
     lsassertm(ret == 0, "%s\n", strerror(errno));
 
+    struct kvm_userspace_memory_region bios_memory_region = {
+        .slot = 2,
+        .flags = 0,
+        .guest_phys_addr = (BIOS_BASE),
+        .memory_size = (BIOS_SIZE),
+        .userspace_addr = (__u64)(ram + BIOS_BASE),
+    };
+    ret = ioctl(vm_fd, KVM_SET_USER_MEMORY_REGION, &bios_memory_region);
+    lsassertm(ret == 0, "%s\n", strerror(errno));
+
     int vcpu_fd = ioctl(vm_fd, KVM_CREATE_VCPU, 0);
     lsassertm(vcpu_fd >= 0, "%s\n", strerror(errno));
 
@@ -796,7 +846,11 @@ int main(int argc, char **argv) {
 
     struct kvm_regs regs;
     get_regs(vcpu_fd, &regs);
-    regs.pc = entry_addr;
+    if (bios_filename) {
+        regs.pc = BIOS_BASE;
+    } else {
+        regs.pc = entry_addr;
+    }
     ret = ioctl(vcpu_fd, KVM_SET_REGS, &regs);
     lsassert(ret == 0);
 
